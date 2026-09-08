@@ -71,7 +71,15 @@ def run_setup():
     cfg["backend_provider"] = selected_prov
 
     # Provider specific config
-    if selected_prov in ["openai_compatible", "nine_router", "hermes"]:
+    if selected_prov == "antigravity":
+        sub_cfg = cfg.get("antigravity", {})
+        print("\n--- Configuring Google Antigravity ---")
+        curr_email = sub_cfg.get("user_account_email", "")
+        email_inp = input(f"Google Account Email [Current: {curr_email or 'None'}]: ").strip()
+        if email_inp:
+            sub_cfg["user_account_email"] = email_inp
+        cfg["antigravity"] = sub_cfg
+    elif selected_prov in ["openai_compatible", "nine_router", "hermes"]:
         sub_key = selected_prov
         sub_cfg = cfg.get(sub_key, {})
         print(f"\n--- Configuring {selected_prov} ---")

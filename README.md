@@ -93,6 +93,7 @@ Or use background runners in `Auto Run/` for Windows.
   "downloads_directory": "E:\\Alfan\\Downloads",
   "antigravity": {
     "binary_path": "agy",
+    "user_account_email": "user@example.com",
     "timeout_seconds": 180.0
   },
   "openai_compatible": {

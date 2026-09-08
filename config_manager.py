@@ -16,6 +16,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "antigravity": {
         "binary_path": "",
         "hub_path": "",
+        "user_account_email": "",
         "dangerously_skip_permissions": True,
         "timeout_seconds": 180.0
     },
