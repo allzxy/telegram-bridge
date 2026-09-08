@@ -24,10 +24,12 @@ If `config.json` does NOT exist:
    - If running with **Hermes Agent / Local Ollama**: set `"backend_provider": "hermes"`. API base: `http://localhost:11434/v1`.
    - If running with **9Router**: set `"backend_provider": "nine_router"`. Ask the user for their 9Router API key.
    - If running with **OpenCode / Claude Code / CLI**: set `"backend_provider": "cli_agent"`.
-3. Ask the user politely for their required credentials:
+   - Otherwise, set `"backend_provider": "auto"`.
+3. **Ask the user for their desired workspace and credentials**:
+   - `working_directory`: Ask where they want tasks and projects executed/saved (e.g. `E:\Projects` or `C:\Users\<user>\Workspace`).
    - `bot_token`: Telegram Bot token obtained from `@BotFather`.
    - `authorized_user_id`: Numeric Telegram User ID (obtained from `@userinfobot`).
-4. Write these values into `config.json`.
+4. Set `"downloads_directory"` to `<working_directory>/downloads` and save into `config.json`.
 
 ## 3. Launching the Bridge
 Launch the bot service:

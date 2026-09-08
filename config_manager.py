@@ -63,15 +63,13 @@ class ConfigManager:
             except Exception as e:
                 print(f"[ConfigManager] Error reading config.json: {e}")
         else:
-            token_env = os.getenv("TELEGRAM_BOT_TOKEN", "8847785720:AAFCt79cA-LZS0H5aZpow-4ZztD0ene32B8")
-            owner_env = int(os.getenv("TELEGRAM_AUTHORIZED_ID", "6121737493"))
+            token_env = os.getenv("TELEGRAM_BOT_TOKEN", "")
+            owner_env = int(os.getenv("TELEGRAM_AUTHORIZED_ID", "0")) if os.getenv("TELEGRAM_AUTHORIZED_ID") else 0
             cfg["bot_token"] = token_env
             cfg["authorized_user_id"] = owner_env
-            cfg["user_account_email"] = os.getenv("TELEGRAM_USER_EMAIL", "allzxy77@gmail.com")
-            cfg["working_directory"] = str(Path(r"C:\Users\SERVER SMK AL-HUDA"))
-            cfg["downloads_directory"] = str(Path(r"E:\Alfan\Downloads"))
-            cfg["antigravity"]["binary_path"] = str(Path(r"C:\Users\SERVER SMK AL-HUDA\AppData\Local\agy\bin\agy.exe"))
-            cfg["antigravity"]["hub_path"] = str(Path(r"C:\Users\SERVER SMK AL-HUDA\antigravity"))
+            cfg["user_account_email"] = os.getenv("TELEGRAM_USER_EMAIL", "")
+            cfg["working_directory"] = str(Path.cwd())
+            cfg["downloads_directory"] = str(BRIDGE_DIR / "downloads")
             self.save(cfg)
 
         # Environment variable overrides

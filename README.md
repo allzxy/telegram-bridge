@@ -48,7 +48,9 @@ Telah dilengkapi file direktif otomatis:
 
 Agent cukup menjalankan 3 langkah otomatis:
 1. `pip install -r requirements.txt`
-2. Salin `config.example.json` ke `config.json` (biarkan `backend_provider: auto`), lalu tanyakan **Bot Token** dan **Telegram User ID** ke user.
+2. Salin `config.example.json` ke `config.json` (biarkan `backend_provider: auto`), lalu tanyakan ke user:
+   - **Workspace Directory** (tempat bot bekerja dan menyimpan analisis/project baru).
+   - **Bot Token** dan **Telegram User ID**.
 3. Jalankan `bridge_telegram.py` (atau script background `Auto Run/start_bot_hidden.vbs`).
 
 ---

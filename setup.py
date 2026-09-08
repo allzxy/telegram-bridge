@@ -86,6 +86,19 @@ def run_setup():
             sub_cfg["model"] = model
         cfg[sub_key] = sub_cfg
 
+    # 4. Workspace Working Directory
+    curr_wd = cfg.get("working_directory", str(Path.cwd()))
+    print(f"\n[4] Workspace Working Directory (where tasks and projects will be saved/analyzed)")
+    print(f"Current default: {curr_wd}")
+    new_wd = input("Enter Workspace Directory (leave blank to keep current): ").strip()
+    if new_wd:
+        cfg["working_directory"] = new_wd
+    else:
+        cfg["working_directory"] = curr_wd
+
+    # Downloads Directory
+    cfg["downloads_directory"] = str(Path(cfg["working_directory"]) / "downloads")
+
     # Save configuration
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
