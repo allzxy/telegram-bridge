@@ -88,7 +88,6 @@ Or use background runners in `Auto Run/` for Windows.
 {
   "bot_token": "123456789:ABCdefGHI...",
   "authorized_user_id": 6121737493,
-  "user_account_email": "user@gmail.com",
   "backend_provider": "antigravity",
   "working_directory": "C:\\Users\\...",
   "downloads_directory": "E:\\Alfan\\Downloads",

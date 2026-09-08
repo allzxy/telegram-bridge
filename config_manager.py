@@ -10,7 +10,6 @@ CONFIG_EXAMPLE_FILE = BRIDGE_DIR / "config.example.json"
 DEFAULT_CONFIG: Dict[str, Any] = {
     "bot_token": "",
     "authorized_user_id": 0,
-    "user_account_email": "",
     "backend_provider": "auto",
     "working_directory": "",
     "downloads_directory": "",
@@ -67,7 +66,6 @@ class ConfigManager:
             owner_env = int(os.getenv("TELEGRAM_AUTHORIZED_ID", "0")) if os.getenv("TELEGRAM_AUTHORIZED_ID") else 0
             cfg["bot_token"] = token_env
             cfg["authorized_user_id"] = owner_env
-            cfg["user_account_email"] = os.getenv("TELEGRAM_USER_EMAIL", "")
             cfg["working_directory"] = str(Path.cwd())
             cfg["downloads_directory"] = str(BRIDGE_DIR / "downloads")
             self.save(cfg)

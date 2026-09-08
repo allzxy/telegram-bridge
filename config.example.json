@@ -1,7 +1,6 @@
 {
   "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
   "authorized_user_id": 123456789,
-  "user_account_email": "user@example.com",
   "backend_provider": "auto",
   "working_directory": ".",
   "downloads_directory": "./downloads",

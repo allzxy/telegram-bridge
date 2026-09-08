@@ -48,7 +48,6 @@ from engine_adapters import (
 _cfg = config_mgr.config
 BOT_TOKEN = _cfg.get("bot_token", "")
 AUTHORIZED_USER_ID = int(_cfg.get("authorized_user_id", 0))
-USER_ACCOUNT_EMAIL = _cfg.get("user_account_email", "")
 
 # Adaptive Engine Auto-Detection
 _raw_provider = _cfg.get("backend_provider", "auto")
