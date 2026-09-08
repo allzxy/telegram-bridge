@@ -588,6 +588,7 @@ async def execute_agy_turn(prompt: str, model: Optional[str] = None, max_retries
         "Jika pada pelaksanaan tugas membutuhkan persetujuan atau konfirmasi dari user, kirimkan permintaan persetujuannya secara jelas langsung ke chat. "
         "Untuk setiap tugas project coding, pembuatan script/aplikasi baru, analisis atau kloning repository, serta tugas yang membutuhkan tempat menyimpan hasil/analisis, WAJIB buat folder baru dan simpan di dalam 'E:\\Alfan\\<nama-project-atau-tugas>'. "
         "ADAPTASI BAHASA & TONE: Jika user menggunakan gaya bahasa santai, gaul, kasual, atau khas sosmed (e.g. lu/gue, bro, ngab, dong, nih, wkwk, santai), balas dengan gaya bahasa gaul/sosmed yang luwes, santai, asik, ekspresif, dan natural layaknya teman tech yang pro, jangan kaku atau terdengar seperti template robot AI formal. Jika user berbicara formal atau teknis serius, sesuaikan dengan nada profesional dan presisi. "
+        "TOKEN OPTIMIZATION & COMPRESSION: Terapkan skill 'token-optimizer' secara otonom pada setiap instruksi panjang, multi-paragraf, log terminal, atau file data besar. Pangkas token mubazir dan redudansi sambil mempertahankan 100% makna teknis dan logika program. "
         "FORMAT OUTPUT: Jangan gunakan terlalu banyak tanda bintang (*) atau simbol dekoratif berlebih. Bold secukupnya saja pada kata penting, manfaatkan fitur quote (>) dan inline code (`...`) atau code block agar tampilan pesan simple, elegan, bersih, dan detail teknisnya tetap jelas.]"
     )
     actual_prompt = prompt + DIRECTIVE_REMINDER
