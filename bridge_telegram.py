@@ -872,6 +872,8 @@ def markdown_to_telegram_html(md: str) -> str:
             p = re.sub(r'^[ \t]*[*\-][ \t]+', '• ', p, flags=re.MULTILINE)
             # Clean excessive divider lines
             p = re.sub(r'^[ \t]*[-*_]{3,}[ \t]*$', '──────────', p, flags=re.MULTILINE)
+            # Strip remaining stray unclosed asterisks or raw markdown symbols
+            p = re.sub(r'(?<!\w)\*+(?!\w)', '', p)
             escaped_parts.append(p)
 
     res = "".join(escaped_parts)
