@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.log
+proc_out.log
+proc_err.log
+debug_run.log
+debug_wscript.log
+pythonw_test.txt
+test_loop.txt
+last_transcript.txt
+downloads/*
+!downloads/.gitkeep
+
+# Sensitive local credentials (use config.example.json)
+config.json
+active_session.json
+quota_state.json
+server_state.json
+task_state.json
+failover_state.json
+push.bat

@@ -1,0 +1,43 @@
+{
+  "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "authorized_user_id": 123456789,
+  "user_account_email": "user@example.com",
+  "backend_provider": "auto",
+  "working_directory": ".",
+  "downloads_directory": "./downloads",
+  "antigravity": {
+    "binary_path": "agy",
+    "hub_path": "",
+    "dangerously_skip_permissions": true,
+    "timeout_seconds": 180.0
+  },
+  "openai_compatible": {
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o",
+    "system_prompt": "You are a production-grade autonomous AI software engineer."
+  },
+  "nine_router": {
+    "api_base": "https://api.9router.com/v1",
+    "api_key": "nr-...",
+    "model": "deepseek-chat"
+  },
+  "hermes": {
+    "api_base": "http://localhost:11434/v1",
+    "api_key": "ollama",
+    "model": "hermes-3-llama-3.1-8b"
+  },
+  "cli_agent": {
+    "binary_path": "opencode",
+    "args_template": [
+      "-p",
+      "{prompt}"
+    ]
+  },
+  "failover": {
+    "enabled": true,
+    "role": "auto",
+    "standby_check_interval": 6.0,
+    "takeover_threshold_misses": 3
+  }
+}
