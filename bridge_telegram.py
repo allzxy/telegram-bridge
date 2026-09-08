@@ -588,7 +588,7 @@ async def execute_agy_turn(prompt: str, model: Optional[str] = None, max_retries
         "Jika pada pelaksanaan tugas membutuhkan persetujuan atau konfirmasi dari user, kirimkan permintaan persetujuannya secara jelas langsung ke chat. "
         "Untuk setiap tugas project coding, pembuatan script/aplikasi baru, analisis atau kloning repository, serta tugas yang membutuhkan tempat menyimpan hasil/analisis, WAJIB buat folder baru dan simpan di dalam 'E:\\Alfan\\<nama-project-atau-tugas>'. "
         "ADAPTASI BAHASA & TONE: Jika user menggunakan gaya bahasa santai, gaul, kasual, atau khas sosmed (e.g. lu/gue, bro, ngab, dong, nih, wkwk, santai), balas dengan gaya bahasa gaul/sosmed yang luwes, santai, asik, ekspresif, dan natural layaknya teman tech yang pro, jangan kaku atau terdengar seperti template robot AI formal. Jika user berbicara formal atau teknis serius, sesuaikan dengan nada profesional dan presisi. "
-        "TOKEN OPTIMIZATION & COMPRESSION: Terapkan skill 'token-optimizer' secara otonom pada setiap instruksi panjang, multi-paragraf, log terminal, atau file data besar. Pangkas token mubazir dan redudansi sambil mempertahankan 100% makna teknis dan logika program. "
+        "MEDIA & FILE SEARCH PROTOCOL: Jika user meminta untuk mencarikan gambar, foto, atau file yang belum ada di server, WAJIB download/unduh file tersebut terlebih dahulu ke server (ke folder Downloads). Setelah terdownload, sebutkan path lokal absolutnya secara jelas agar bot langsung mengirimkannya ke chat Telegram. Sampaikan ke user bahwa file tersimpan sementara dan akan otomatis dihapus dalam 5 menit jika tidak ada permintaan penghapusan instan. JANGAN PERNAH menghapus source code, berkas project, modul, atau script penting! "
         "TYPOGRAPHY & FORMAT TELEGRAM (CLEAN & AESTHETIC): JANGAN PERNAH spam tanda bintang (*) atau karakter kurung siku (< / >) berlebihan! Gunakan format tipografi Telegram native: manfaatkan blockquote (> teks) untuk kutipan atau highlight, gunakan bold secukupnya untuk penekanan penting, gunakan inline code (`teks`) untuk path/perintah/istilah teknis, dan gunakan code block untuk script. Buat tampilan pesan sangat bersih, elegan, dan enak dibaca di Telegram.]"
     )
     actual_prompt = prompt + DIRECTIVE_REMINDER
@@ -935,6 +935,65 @@ async def send_chunked_message(update: Update, text: str, parse_mode: Optional[s
             await update.effective_message.reply_text(clean_part if clean_part.strip() else part, reply_markup=markup)
         await asyncio.sleep(0.3)
 
+# --- TEMPORARY MEDIA AUTO-CLEANUP ENGINE ---
+# Tracks files downloaded specifically for user inspection (e.g. image/file search).
+# Files are held for 5 minutes and then automatically deleted from the server,
+# UNLESS they are recognized as protected project source files.
+_TEMP_DISPATCHED_FILES: Dict[str, float] = {}
+
+def is_protected_project_path(p: Path) -> bool:
+    """
+    Safeguards source code, project scripts, repositories, and workspace modules
+    from accidental automated deletion.
+    """
+    try:
+        resolved = str(p.resolve()).lower()
+        # Protected file extensions for programming and project artifacts
+        code_exts = {
+            '.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.html', '.css', '.scss',
+            '.c', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs', '.java', '.kt', '.php',
+            '.rb', '.sh', '.bat', '.cmd', '.ps1', '.vbs', '.sql', '.yaml', '.yml',
+            '.toml', '.md', '.txt', '.git', '.gitignore', '.lock'
+        }
+        if p.suffix.lower() in code_exts:
+            return True
+
+        # Never delete files inside git repositories or bridge directory
+        if any(token in resolved for token in [r'\.git', r'\telegram-bridge', r'\node_modules', r'\venv', r'\.gemini']):
+            return True
+
+        return False
+    except Exception:
+        return True
+
+async def schedule_temp_file_cleanup(app: Application, file_path: Path, chat_id: int, delay_seconds: float = 300.0):
+    """
+    Waits 5 minutes (300 seconds), then automatically deletes the downloaded temporary file
+    from the server if not already deleted, and notifies the chat quietly.
+    """
+    file_key = str(file_path.resolve()).lower()
+    _TEMP_DISPATCHED_FILES[file_key] = time.time() + delay_seconds
+
+    await asyncio.sleep(delay_seconds)
+
+    if file_key in _TEMP_DISPATCHED_FILES:
+        try:
+            if file_path.exists() and file_path.is_file():
+                if not is_protected_project_path(file_path):
+                    file_path.unlink(missing_ok=True)
+                    logger.info(f"Temporary file auto-deleted after 5 minutes: {file_path.name}")
+                    try:
+                        clean_msg = f"> 🗑️ <code>{file_path.name}</code> telah otomatis dibersihkan dari server setelah 5 menit."
+                        html_msg = markdown_to_telegram_html(clean_msg)
+                        await app.bot.send_message(chat_id=chat_id, text=html_msg, parse_mode=constants.ParseMode.HTML)
+                    except Exception:
+                        pass
+        except Exception as err:
+            logger.warning(f"Failed to auto-clean temporary file {file_path}: {err}")
+        finally:
+            _TEMP_DISPATCHED_FILES.pop(file_key, None)
+
+
 async def auto_dispatch_files_from_response(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     """
     Scans the AI response text for referenced local files or images (e.g. from Downloads, Workspace,
@@ -1046,6 +1105,11 @@ async def auto_dispatch_files_from_response(update: Update, context: ContextType
                     parse_mode=None
                 )
                 logger.info(f"auto_dispatch: Successfully sent document {p.name}")
+
+            # If the file is not a protected project file, schedule auto-cleanup after 5 minutes
+            if not is_protected_project_path(p):
+                asyncio.create_task(schedule_temp_file_cleanup(context.application, p, chat_id, delay_seconds=300.0))
+
             await asyncio.sleep(0.3)
         except Exception as fe:
             logger.error(f"Error auto-dispatching file {p}: {fe}")
@@ -2258,6 +2322,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.args.append(custom_t)
         await download_cmd(update, context)
         return
+
+    # 4. Instant Natural File Cleanup / Delete Request
+    delete_match = re.search(
+        r'^(?:hapus|delete|rm|bersihkan)\s+(?:file|gambar|foto|dokumen)?\s*["\']?([a-zA-Z]:[^\r\n"\'<>]+|[\w\-\.\/\\]+\.[a-zA-Z0-9]+)["\']?',
+        text.strip(),
+        re.IGNORECASE
+    )
+    if delete_match:
+        target_name = delete_match.group(1).strip().strip('"\'`')
+        p = Path(target_name)
+        if not p.is_absolute():
+            for base in [DOWNLOADS_DIR, WORKSPACE_DIR, BRIDGE_DIR]:
+                cand = base / target_name
+                if cand.exists():
+                    p = cand
+                    break
+
+        if p.exists() and p.is_file():
+            if is_protected_project_path(p):
+                await send_chunked_message(update, f"> 🛡️ <b>Penghapusan Ditolak</b>: Berkas <code>{p.name}</code> adalah file project / script sistem yang dilindungi.")
+                return
+            try:
+                p.unlink(missing_ok=True)
+                _TEMP_DISPATCHED_FILES.pop(str(p.resolve()).lower(), None)
+                await send_chunked_message(update, f"> 🗑️ <b>Berhasil Dihapus</b>: Berkas <code>{p.name}</code> telah dihapus dari server.")
+                return
+            except Exception as de:
+                await send_chunked_message(update, f"> ❌ Gagal menghapus file: <code>{de}</code>")
+                return
 
     # 4. If an AGY task is already actively executing, handle progress inquiries instantly or enqueue additional commands
     if is_turn_in_progress or not task_queue.empty():
