@@ -20,12 +20,16 @@ python setup.py --token "<BOT_TOKEN>" --owner <TELEGRAM_USER_ID> --yes
 ```
 
 > 💡 **What `setup.py` automatically does:**
-> 1. **Auto Cloud Discovery**: Derives a cryptographic topic `allzxy_cl_<sha256(token:owner)>` and checks `ntfy.sh`.
-> 2. **Zero-Conflict Failover**:
->    - If another server is already running with this token, this server automatically becomes **STANDBY** (no double responses, no `409 Conflict`).
->    - If no server is running, this server automatically becomes **PRIMARY**.
-> 3. **Auto Workspace**: Detects the host's primary workspace directory automatically.
-> 4. **Auto Launch**: Automatically spawns the bot in the background via daemon (`start_bot_hidden.vbs` on Windows or `nohup` on Linux).
+> 1. **Auto Agent Identity & Naming**: Fetches the agent's bot identity from Telegram (`getMe`).
+>    - First server automatically registers as **Server 1 - {AgentName} ({Host})** with role **PRIMARY**.
+>    - Subsequent servers automatically register as **Server 2 / N - {AgentName} ({Host})** with role **STANDBY**.
+> 2. **Auto Cloud Discovery**: Derives an isolated cryptographic topic `tg_bridge_cl_<sha256(token:owner)>` and checks `ntfy.sh`.
+> 3. **Instant Auto-Synchronization**:
+>    - When Server 2 is installed while Server 1 is active, Server 2 immediately signals and pulls all context & skills from Server 1.
+>    - If Server 1 is offline, Server 2 completes setup smoothly and syncs as soon as Server 1 comes online.
+> 4. **Zero-Conflict Failover**:
+>    - Active primary handles all interactions; standby monitors health and auto-promotes if primary fails.
+> 5. **Auto Workspace & Daemon Launch**: Detects the host's primary workspace directory and spawns the background daemon (`start_bot_hidden.vbs` on Windows or daemon on Linux).
 
 ---
 

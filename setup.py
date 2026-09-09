@@ -40,7 +40,30 @@ def print_banner():
 
 def compute_cloud_topic(token: str, user_id: int) -> str:
     raw = f"{token}:{user_id}".encode("utf-8")
-    return "allzxy_cl_" + hashlib.sha256(raw).hexdigest()[:24]
+    return "tg_bridge_cl_" + hashlib.sha256(raw).hexdigest()[:24]
+
+def get_telegram_bot_info(token: str, timeout: float = 3.5) -> dict:
+    """Fetches Telegram bot metadata to automatically adopt agent identity without hardcoding."""
+    url = f"https://api.telegram.org/bot{token}/getMe"
+    try:
+        if httpx:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("ok"):
+                        return data.get("result", {})
+        else:
+            import urllib.request
+            req = urllib.request.Request(url, headers={"User-Agent": "TelegramBridge-Setup/2.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("ok"):
+                        return data.get("result", {})
+    except Exception as e:
+        print(f"[*] Info bot identity check: {e}")
+    return {}
 
 def probe_existing_cluster(token: str, user_id: int, timeout: float = 4.0):
     """
@@ -78,7 +101,7 @@ def probe_existing_cluster(token: str, user_id: int, timeout: float = 4.0):
                             pass
         else:
             import urllib.request
-            req = urllib.request.Request(url, headers={"User-Agent": "Allzxy-Setup/2.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "TelegramBridge-Setup/2.0"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status == 200:
                     content = resp.read().decode("utf-8")
@@ -100,6 +123,27 @@ def probe_existing_cluster(token: str, user_id: int, timeout: float = 4.0):
         print(f"[!] Info cloud probe: {e}")
         
     return found_primary, all_nodes
+
+def send_sync_request_signal(topic: str, server_id: str, server_name: str):
+    """Broadcasts a sync_request signal to cloud topic asking primary to push context & skills."""
+    payload = {
+        "type": "sync_request",
+        "server_id": server_id,
+        "server_name": server_name,
+        "timestamp": time.time(),
+    }
+    url = f"https://ntfy.sh/{topic}"
+    try:
+        if httpx:
+            with httpx.Client(timeout=3.0) as client:
+                client.post(url, data=json.dumps(payload))
+        else:
+            import urllib.request
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                pass
+    except Exception:
+        pass
 
 def detect_default_working_dir() -> str:
     candidates = [
@@ -227,11 +271,36 @@ def run_setup():
 
     # 3. Automatic Cross-Network Cloud Discovery & Role Resolution
     print("\n🔍 Memeriksa cluster multi-server antar jaringan...")
+    bot_info = get_telegram_bot_info(token)
+    agent_name = bot_info.get("first_name") or bot_info.get("username") or "AI Agent"
+    print(f"  [✓] Terhubung dengan Bot Telegram: {agent_name} (@{bot_info.get('username', 'bot')})")
+
     primary_node, all_nodes = probe_existing_cluster(token, owner_id)
 
     raw_node = platform.node().lower()
     clean_node_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_node)
-    server_name = args.name or cfg.get("cluster", {}).get("server_name") or f"Server {platform.node()}"
+
+    # Calculate cluster server numbering
+    # Count unique active peers from probe excluding self
+    unique_peers = {
+        n.get("server_id"): n for n in all_nodes 
+        if n.get("server_id") and n.get("server_id") != clean_node_id
+    }
+    server_num = len(unique_peers) + 1
+
+    # Deterministic cluster secret based on token hash
+    token_seed = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    default_secret = f"cluster_sec_{token_seed}"
+
+    # Auto-generate server name if not custom specified:
+    # Server 1 - {agent_name} ({hostname}) or Server 2 - {agent_name} ({hostname})
+    existing_cfg_name = cfg.get("cluster", {}).get("server_name")
+    if args.name:
+        server_name = args.name
+    elif existing_cfg_name and not existing_cfg_name.startswith("Server SMK AL-HUDA"):
+        server_name = existing_cfg_name
+    else:
+        server_name = f"Server {server_num} - {agent_name} ({platform.node()})"
     
     cluster_cfg = cfg.get("cluster", {})
     cluster_cfg["enabled"] = True
@@ -241,7 +310,9 @@ def run_setup():
     cluster_cfg["lan_discovery"] = True
     cluster_cfg["lan_beacon_port"] = cluster_cfg.get("lan_beacon_port", 8766)
     cluster_cfg["cloud_discovery"] = True
-    cluster_cfg["secret_token"] = cluster_cfg.get("secret_token", "allzxy-cluster-secret")
+    cluster_cfg["secret_token"] = cluster_cfg.get("secret_token") or default_secret
+    if cluster_cfg["secret_token"] == "allzxy-cluster-secret":
+        cluster_cfg["secret_token"] = default_secret
     cluster_cfg["auto_sync_context"] = True
     cluster_cfg["auto_sync_skills"] = True
     cluster_cfg["sync_interval"] = 30.0
@@ -257,14 +328,24 @@ def run_setup():
                 print(f"  [✓] Terdeteksi SERVER LAIN sedang aktif sebagai PRIMARY:")
                 print(f"      👉 Nama: {p_name} ({p_id})")
                 print(f"  [✓] Server ini ({server_name}) otomatis diatur sebagai: [STANDBY]")
-                print("      (Akan siap siaga, sinkronisasi context, dan auto-failover jika server utama mati)")
+                print("      (Akan siap siaga, auto-failover, dan sinkronisasi context & skills)")
                 cluster_cfg["role"] = "auto"
+                
+                # Signal sync request to Primary immediately
+                cloud_topic = compute_cloud_topic(token, owner_id)
+                print(f"  [⚡] Mengirim sinyal sinkronisasi awal ke Server 1 ({p_name})...")
+                send_sync_request_signal(cloud_topic, clean_node_id, server_name)
             else:
                 print(f"  [✓] Node ini sendiri terdeteksi sebagai PRIMARY sebelumnya. Tetap: [PRIMARY]")
                 cluster_cfg["role"] = "auto"
         else:
-            print("  [✓] Tidak ada server lain yang aktif. Server ini otomatis menjadi: [PRIMARY]")
-            cluster_cfg["role"] = "auto"
+            if unique_peers:
+                print(f"  [ℹ] Terdeteksi {len(unique_peers)} server lain di cluster tapi Server 1 sedang offline.")
+                print(f"  [✓] Server ini ({server_name}) selesai diinstall dan antre sinkronisasi saat Server 1 online.")
+                cluster_cfg["role"] = "auto"
+            else:
+                print(f"  [✓] Tidak ada server lain yang aktif. Server ini otomatis menjadi: [PRIMARY] (Server 1)")
+                cluster_cfg["role"] = "auto"
     else:
         cluster_cfg["role"] = resolved_role
         print(f"  [✓] Role kluster ditentukan manual: [{resolved_role.upper()}]")

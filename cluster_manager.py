@@ -245,7 +245,11 @@ class ClusterManager:
         self.port = int(cluster_cfg.get("port", 8765))
         self.lan_discovery = cluster_cfg.get("lan_discovery", True)
         self.lan_beacon_port = int(cluster_cfg.get("lan_beacon_port", 8766))
-        self.secret_token = cluster_cfg.get("secret_token", "allzxy-cluster-secret")
+        token_seed = hashlib.sha256(config.get("bot_token", "").encode("utf-8")).hexdigest()[:16]
+        default_secret = f"cluster_sec_{token_seed}"
+        self.secret_token = cluster_cfg.get("secret_token") or default_secret
+        if self.secret_token == "allzxy-cluster-secret":
+            self.secret_token = default_secret
         self.configured_role = cluster_cfg.get("role", "auto").lower()  # "primary", "standby", "auto"
         self.auto_sync_context = cluster_cfg.get("auto_sync_context", True)
         self.auto_sync_skills = cluster_cfg.get("auto_sync_skills", True)
@@ -259,18 +263,24 @@ class ClusterManager:
         self.cloud_discovery = cluster_cfg.get("cloud_discovery", True)
         if self.bot_token and self.authorized_user_id:
             raw_sign = f"{self.bot_token}:{self.authorized_user_id}".encode("utf-8")
-            self.cloud_topic = "allzxy_cl_" + hashlib.sha256(raw_sign).hexdigest()[:24]
+            self.cloud_topic = "tg_bridge_cl_" + hashlib.sha256(raw_sign).hexdigest()[:24]
         else:
             self.cloud_topic = ""
         self.last_cloud_msg_time = 0.0
 
-        # Directives & Skills directory detection
+        # Directives & Skills directory detection (dynamic per host)
         hub_path = config.get("antigravity", {}).get("hub_path", "")
+        agent_skills = Path.home() / ".agents" / "skills"
+        antigravity_skills = Path.home() / "antigravity" / "skills"
         if hub_path and Path(hub_path).exists():
             self.skills_dir = Path(hub_path) / "skills"
+        elif antigravity_skills.exists():
+            self.skills_dir = antigravity_skills
+        elif agent_skills.exists():
+            self.skills_dir = agent_skills
         else:
-            default_hub = Path(r"C:\Users\SERVER SMK AL-HUDA\antigravity\skills")
-            self.skills_dir = default_hub if default_hub.exists() else (self.bridge_dir / "skills")
+            self.skills_dir = self.bridge_dir / "skills"
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
 
         self.session_file = self.bridge_dir / "active_session.json"
         self.task_file = self.bridge_dir / "task_state.json"
@@ -525,7 +535,9 @@ class ClusterManager:
                             "turns": getattr(self.session, "turns", 0),
                             "context": self.get_context_data() if self.auto_sync_context else None,
                         }
-                        httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(payload), timeout=4.0)
+                        resp = httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(payload), timeout=4.0)
+                        if resp.status_code == 429:
+                            time.sleep(5.0)
                     else:
                         payload = {
                             "type": "presence",
@@ -539,10 +551,12 @@ class ClusterManager:
                             "active_model": getattr(self.session, "active_model", ""),
                             "turns": getattr(self.session, "turns", 0),
                         }
-                        httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(payload), timeout=4.0)
+                        resp = httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(payload), timeout=4.0)
+                        if resp.status_code == 429:
+                            time.sleep(5.0)
                 except Exception as e:
                     logger.debug(f"Cloud broadcaster error: {e}")
-                time.sleep(6.0 if self.is_primary() else 15.0)
+                time.sleep(10.0 if self.is_primary() else 20.0)
 
         self.cloud_broadcaster_thread = threading.Thread(target=_broadcaster, daemon=True, name="ClusterCloudBroadcast")
         self.cloud_broadcaster_thread.start()
@@ -603,6 +617,20 @@ class ClusterManager:
                                     if ctx and self.auto_sync_context:
                                         self.apply_context_data(ctx)
 
+                            # Handle sync request from a new node (e.g. Server 2 just installed)
+                            elif msg_type == "sync_request":
+                                if self.is_primary():
+                                    logger.info(f"Received sync_request from {sender_name} ({sender_id}). Sending immediate cluster sync response...")
+                                    self._send_cloud_sync_response()
+
+                            # Handle sync response from primary
+                            elif msg_type == "sync_response":
+                                if self.current_role == "standby":
+                                    logger.info(f"Received sync_response from primary {sender_name} ({sender_id})")
+                                    ctx = data.get("context")
+                                    if ctx and self.auto_sync_context:
+                                        self.apply_context_data(ctx)
+
                             # Handle takeover command
                             elif msg_type == "takeover":
                                 target_id = data.get("target_id")
@@ -622,6 +650,23 @@ class ClusterManager:
 
         self.cloud_listener_thread = threading.Thread(target=_listener, daemon=True, name="ClusterCloudListener")
         self.cloud_listener_thread.start()
+
+    def _send_cloud_sync_response(self):
+        """Sends full context state over cloud topic in response to sync_request."""
+        if not self.cloud_discovery or not self.cloud_topic:
+            return
+        try:
+            payload = {
+                "type": "sync_response",
+                "server_id": self.server_id,
+                "server_name": self.server_name,
+                "role": "primary",
+                "timestamp": time.time(),
+                "context": self.get_context_data(),
+            }
+            httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(payload), timeout=4.0)
+        except Exception as e:
+            logger.debug(f"Error sending cloud sync response: {e}")
 
     # --- ROLE ARBITRATION & INITIAL DETECTION ---
 
@@ -717,17 +762,26 @@ class ClusterManager:
                     break
 
             primary_alive = False
-            if primary_peer and primary_peer.url:
-                try:
-                    with httpx.Client(timeout=2.5) as client:
-                        resp = client.get(f"{primary_peer.url}/api/heartbeat")
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            primary_peer.update_from_status(data)
-                            if data.get("role") == "primary":
-                                primary_alive = True
-                except Exception:
-                    primary_alive = False
+            now = time.time()
+            if primary_peer:
+                if primary_peer.url:
+                    try:
+                        with httpx.Client(timeout=2.5) as client:
+                            resp = client.get(f"{primary_peer.url}/api/heartbeat")
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                primary_peer.update_from_status(data)
+                                if data.get("role") == "primary":
+                                    primary_alive = True
+                    except Exception:
+                        primary_alive = False
+                else:
+                    # Cloud-only peer (different network / Tailscale-free)
+                    # Node is considered alive if seen within last 25 seconds
+                    if (now - primary_peer.last_seen) < 25.0:
+                        primary_alive = True
+                    else:
+                        primary_alive = False
 
             if primary_alive:
                 self.consecutive_misses = 0
@@ -1077,7 +1131,7 @@ class ClusterManager:
         total_count = len(self.peers)
 
         lines = [
-            "> 🖥 <b>Status Cluster Multi-Server Allzxy</b>\n>",
+            "> 🖥 <b>Status Cluster Multi-Server</b>\n>",
         ]
 
         # Put Primary first, then Standbys

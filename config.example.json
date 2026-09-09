@@ -49,7 +49,7 @@
     "lan_discovery": true,
     "lan_beacon_port": 8766,
     "cloud_discovery": true,
-    "secret_token": "allzxy-cluster-secret",
+    "secret_token": "cluster_secret_auto",
     "peers": [],
     "auto_sync_context": true,
     "auto_sync_skills": true,
