@@ -256,6 +256,7 @@ class ClusterManager:
         self.sync_interval = float(cluster_cfg.get("sync_interval", 30.0))
         self.standby_check_interval = float(cluster_cfg.get("standby_check_interval", 4.0))
         self.takeover_threshold_misses = int(cluster_cfg.get("takeover_threshold_misses", 3))
+        self.start_time = time.time()
 
         # Cloud Discovery & Signaling (Zero-config across different networks)
         self.bot_token = config.get("bot_token", "")
@@ -528,6 +529,7 @@ class ClusterManager:
                             "server_name": self.server_name,
                             "role": "primary",
                             "timestamp": time.time(),
+                            "start_time": getattr(self, "start_time", 0.0),
                             "cpu": self.self_node.cpu_percent,
                             "ram": self.self_node.ram_percent,
                             "skills_count": len(self.get_skills_manifest()),
@@ -545,6 +547,7 @@ class ClusterManager:
                             "server_name": self.server_name,
                             "role": "standby",
                             "timestamp": time.time(),
+                            "start_time": getattr(self, "start_time", 0.0),
                             "cpu": self.self_node.cpu_percent,
                             "ram": self.self_node.ram_percent,
                             "skills_count": len(self.get_skills_manifest()),
@@ -616,6 +619,29 @@ class ClusterManager:
                                     ctx = data.get("context")
                                     if ctx and self.auto_sync_context:
                                         self.apply_context_data(ctx)
+                                elif self.current_role == "primary":
+                                    # Split-brain dual primary detected!
+                                    # Seniority tiebreaker: Node that started earlier retains primary.
+                                    # If start_time identical or unavailable, lowest server_id wins.
+                                    other_start = data.get("start_time", 0.0)
+                                    my_start = getattr(self, "start_time", time.time())
+                                    should_demote = False
+                                    if other_start > 0 and my_start > 0 and abs(other_start - my_start) > 2.0:
+                                        if my_start > other_start:
+                                            should_demote = True
+                                    else:
+                                        if self.server_id > sender_id:
+                                            should_demote = True
+
+                                    if should_demote:
+                                        logger.warning(
+                                            f"Dual Primary collision detected with {sender_name} ({sender_id}). "
+                                            f"Stepping down self to STANDBY to prevent 409 Conflict."
+                                        )
+                                        self.current_role = "standby"
+                                        self.self_node.role = "standby"
+                                        if self.role_change_callback:
+                                            self.role_change_callback("standby")
 
                             # Handle sync request from a new node (e.g. Server 2 just installed)
                             elif msg_type == "sync_request":

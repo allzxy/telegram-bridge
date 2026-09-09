@@ -3142,6 +3142,21 @@ def build_application() -> Application:
     # Interactive Button Callback Handler
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
+    async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+        err = context.error
+        err_str = str(err).lower() if err else ""
+        if "conflict" in err_str:
+            logger.warning("Telegram polling Conflict detected in global error handler. Transitioning to STANDBY...")
+            if cluster_mgr:
+                cluster_mgr.current_role = "standby"
+                cluster_mgr.self_node.role = "standby"
+                if cluster_mgr.role_change_callback:
+                    cluster_mgr.role_change_callback("standby")
+        else:
+            logger.error(f"Global Telegram Error Handler: {err}")
+
+    app.add_error_handler(global_error_handler)
+
     return app
 
 def main():
