@@ -151,6 +151,14 @@ class ClusterRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, cm.get_skills_manifest())
             return
 
+        if path == "/api/claim_message":
+            qs = parse_qs(parsed.query)
+            msg_id = int(qs.get("id", [0])[0])
+            node_id = qs.get("node", ["unknown"])[0]
+            success, owner = cm.register_message_claim(msg_id, node_id)
+            self._send_json(200, {"ok": True, "claimed": success, "owner": owner})
+            return
+
         if path.startswith("/api/sync/skills/download/"):
             skill_name = path[len("/api/sync/skills/download/"):]
             bundle = cm.export_skill_bundle(skill_name)
@@ -288,12 +296,59 @@ class ClusterManager:
 
         self.shutdown_event = threading.Event()
         self.consecutive_misses = 0
+        self.claimed_messages: Dict[int, Tuple[float, str]] = {}
+        self.message_lock = threading.Lock()
         self.http_server: Optional[ClusterHTTPServer] = None
         self.http_thread: Optional[threading.Thread] = None
         self.beacon_broadcaster_thread: Optional[threading.Thread] = None
         self.beacon_listener_thread: Optional[threading.Thread] = None
         self.watchdog_thread: Optional[threading.Thread] = None
         self.sync_thread: Optional[threading.Thread] = None
+
+    def register_message_claim(self, msg_id: int, node_id: str) -> Tuple[bool, str]:
+        now = time.time()
+        with self.message_lock:
+            self._cleanup_claimed_messages()
+            if msg_id in self.claimed_messages:
+                _, owner = self.claimed_messages[msg_id]
+                return False, owner
+            self.claimed_messages[msg_id] = (now, node_id)
+            return True, node_id
+
+    def _cleanup_claimed_messages(self):
+        now = time.time()
+        expired = [mid for mid, (ts, _) in self.claimed_messages.items() if now - ts > 300.0]
+        for mid in expired:
+            self.claimed_messages.pop(mid, None)
+
+    def claim_message(self, msg_id: int) -> bool:
+        """
+        Cluster-wide deduplication: Ensures only ONE node in the cluster ever executes a message.
+        Returns True if this node successfully claimed the message, False if already claimed.
+        """
+        now = time.time()
+        with self.message_lock:
+            self._cleanup_claimed_messages()
+            if msg_id in self.claimed_messages:
+                _, owner = self.claimed_messages[msg_id]
+                logger.warning(f"Message #{msg_id} already claimed by {owner}. Dropping duplicate.")
+                return False
+            self.claimed_messages[msg_id] = (now, self.server_id)
+
+        # Broadcast claim to peers in background thread so they drop any duplicate update
+        def _notify_peers():
+            headers = {"X-Cluster-Token": self.secret_token}
+            for pid, node in list(self.peers.items()):
+                if pid == self.server_id or not node.is_online or not node.url:
+                    continue
+                try:
+                    with httpx.Client(timeout=1.5) as client:
+                        client.get(f"{node.url}/api/claim_message?id={msg_id}&node={self.server_id}", headers=headers)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_notify_peers, daemon=True).start()
+        return True
 
     def start(self):
         """Starts all cluster background daemon services."""

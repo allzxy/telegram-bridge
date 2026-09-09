@@ -2135,6 +2135,20 @@ async def download_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
+
+    msg = update.effective_message
+    if not msg:
+        return
+    msg_id = msg.message_id
+
+    global cluster_mgr
+    if cluster_mgr:
+        if not cluster_mgr.is_primary():
+            logger.warning(f"Standby node received photo #{msg_id}. Dropping to let PRIMARY handle it.")
+            return
+        if not cluster_mgr.claim_message(msg_id):
+            logger.warning(f"Duplicate photo #{msg_id} detected in cluster. Dropping to prevent double execution.")
+            return
     
     photo = update.message.photo[-1]
     caption = update.message.caption or ""
@@ -2187,6 +2201,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc:
         return
+
+    msg = update.effective_message
+    msg_id = msg.message_id if msg else 0
+
+    global cluster_mgr
+    if cluster_mgr and msg_id > 0:
+        if not cluster_mgr.is_primary():
+            logger.warning(f"Standby node received document #{msg_id}. Dropping to let PRIMARY handle it.")
+            return
+        if not cluster_mgr.claim_message(msg_id):
+            logger.warning(f"Duplicate document #{msg_id} detected in cluster. Dropping to prevent double execution.")
+            return
         
     caption = update.message.caption or ""
     clean_name = re.sub(r'[^\w\-_\.]', '_', doc.file_name or "document.txt")
@@ -2277,10 +2303,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
     
-    text = update.effective_message.text
-    if not text:
+    msg = update.effective_message
+    if not msg or not msg.text:
         return
 
+    msg_id = msg.message_id
+
+    # --- CLUSTER PRIMARY & DEDUPLICATION GUARD ---
+    global cluster_mgr
+    if cluster_mgr:
+        if not cluster_mgr.is_primary():
+            logger.warning(f"Standby node received chat #{msg_id}. Dropping to let PRIMARY handle it.")
+            return
+        if not cluster_mgr.claim_message(msg_id):
+            logger.warning(f"Duplicate chat #{msg_id} detected in cluster. Dropping to prevent double execution.")
+            return
+
+    text = msg.text
     chat_id = update.effective_chat.id
     
     # 1. Shell shortcut
@@ -2413,7 +2452,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         resp, data = await execute_agy_turn(text)
         stop_typing.set()
         await typing_task
-        await send_chunked_message(update, resp, parse_mode=constants.ParseMode.MARKDOWN)
+
+        # Append subtle active node badge
+        node_name = cluster_mgr.server_name if cluster_mgr else "Server"
+        node_badge = f"\n\n> 🖥️ <i>Diproses oleh: {node_name} (PRIMARY)</i>"
+        full_resp = resp + node_badge
+
+        await send_chunked_message(update, full_resp, parse_mode=constants.ParseMode.MARKDOWN)
         await auto_dispatch_files_from_response(update, context, resp)
     except Exception as e:
         stop_typing.set()
@@ -2845,11 +2890,17 @@ async def check_and_prompt_failover_task(bot):
     if not state or state.get("status") != "in_progress":
         return
 
+    start_ts = state.get("start_time", 0.0)
+    elapsed = int(time.time() - start_ts) if start_ts > 0 else 0
+    if elapsed > 1800:
+        # Task is older than 30 minutes, mark expired to prevent outdated prompt
+        state["status"] = "expired"
+        save_task_state(state)
+        return
+
     prompt = state.get("prompt", "")
     conv_id = state.get("conversation_id") or session.conversation_id or "default"
     origin_node = state.get("node", "Server Utama")
-    start_ts = state.get("start_time", 0.0)
-    elapsed = int(time.time() - start_ts) if start_ts > 0 else 0
     mins, secs = divmod(elapsed, 60)
     time_str = f"{mins}m {secs}s lalu" if mins > 0 else f"{secs} detik lalu"
 
@@ -2882,6 +2933,10 @@ async def check_and_prompt_failover_task(bot):
             reply_markup=reply_markup,
         )
         logger.info(f"Failover recovery notification sent to Telegram for task: {preview[:60]}")
+        # Mark as prompted to prevent duplicate notification on subsequent restarts
+        state["status"] = "prompted"
+        state["prompted_at"] = time.time()
+        save_task_state(state)
     except Exception as e:
         logger.error(f"Failed to send failover recovery message: {e}")
 
@@ -2982,31 +3037,29 @@ async def internet_monitor_loop(app: Application):
 
             # Case 2: Internet was OFFLINE, and now RECOVERED back to ONLINE
             elif not was_online and is_online:
-                offline_dur_str = ""
-                if offline_start_time > 0:
-                    dur = int(time.time() - offline_start_time)
+                dur = int(time.time() - offline_start_time) if offline_start_time > 0 else 0
+                if dur >= 25:
                     mins, secs = divmod(dur, 60)
                     offline_dur_str = f" setelah offline selama `{mins}m {secs}s`" if mins > 0 else f" setelah offline selama `{secs} detik`"
-
-                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                msg = (
-                    "> 🌐 *Internet Terhubung Kembali*\n"
-                    ">\n"
-                    f"> 🟢 Status: Koneksi internet PC/Server telah pulih{offline_dur_str}.\n"
-                    f"> ⏱️ Waktu: `{now_str}`\n"
-                    f"> 🤖 Bot: `Bridge-Telegram Online`\n\n"
-                    "_Chatbot siap menerima perintah kembali._"
-                )
-                try:
-                    html_msg = markdown_to_telegram_html(msg)
-                    await app.bot.send_message(
-                        chat_id=AUTHORIZED_USER_ID,
-                        text=html_msg,
-                        parse_mode=constants.ParseMode.HTML
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    msg = (
+                        "> 🌐 *Internet Terhubung Kembali*\n"
+                        ">\n"
+                        f"> 🟢 Status: Koneksi internet PC/Server telah pulih{offline_dur_str}.\n"
+                        f"> ⏱️ Waktu: `{now_str}`\n"
+                        f"> 🤖 Bot: `Bridge-Telegram Online`\n\n"
+                        "_Chatbot siap menerima perintah kembali._"
                     )
-                    logger.info("Internet recovery notification sent to Telegram.")
-                except Exception as ne:
-                    logger.warning(f"Failed to send internet recovery notification: {ne}")
+                    try:
+                        html_msg = markdown_to_telegram_html(msg)
+                        await app.bot.send_message(
+                            chat_id=AUTHORIZED_USER_ID,
+                            text=html_msg,
+                            parse_mode=constants.ParseMode.HTML
+                        )
+                        logger.info("Internet recovery notification sent to Telegram.")
+                    except Exception as ne:
+                        logger.warning(f"Failed to send internet recovery notification: {ne}")
 
                 offline_start_time = 0.0
 
