@@ -43,6 +43,10 @@ from engine_adapters import (
     BaseAgentAdapter,
     auto_detect_engine,
 )
+from cluster_manager import ClusterManager
+
+cluster_mgr: Optional[ClusterManager] = None
+active_app: Optional[Application] = None
 
 # --- CONFIGURATION & PATHS (DYNAMICALLY MANAGED) ---
 _cfg = config_mgr.config
@@ -347,6 +351,9 @@ class AntigravitySession:
             }
             with open(SESSION_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            global cluster_mgr
+            if cluster_mgr and cluster_mgr.is_primary():
+                cluster_mgr.broadcast_context_to_peers()
         except Exception as e:
             logger.error(f"Error saving active_session.json: {e}")
 
@@ -1148,6 +1155,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/backend` `[nama_provider]` — Cek atau ganti provider AI (antigravity, openai, 9router, hermes, cli_agent).\n"
         "• `/model` `[nama/alias]` — Lihat daftar model resmi atau ganti model aktif.\n"
         "• `/status` — Status server hardware, OS, disk, memori, dan binary engine.\n"
+        "• `/server` atau `/nodes` — Status cluster multi-server, menu failover, dan kendali alih server.\n"
         "• `/sync` `[id]` — Sinkronkan Telegram ke sesi kerja CLI di server.\n"
         "• `/sessions` — Daftar riwayat sesi percakapan CLI yang ada di server.\n"
         "• `/autosync` `[on|off]` — Kontrol sinkronisasi otomatis saat terminal CLI ditutup.\n"
@@ -2412,6 +2420,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error during AGY execution: {e}")
         await update.effective_message.reply_text(f"❌ *Engine Error:* `{str(e)}`", parse_mode=constants.ParseMode.MARKDOWN)
 
+# --- CLUSTER MULTI-SERVER COMMAND ---
+
+async def server_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan status cluster multi-server, beban sumber daya, dan menu pindah server."""
+    if not is_authorized(update):
+        return
+    if not cluster_mgr:
+        await update.message.reply_text("Sistem Cluster Multi-Server belum aktif.")
+        return
+
+    text, buttons_matrix = cluster_mgr.render_cluster_menu()
+    kb = []
+    for row in buttons_matrix:
+        r = [InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in row]
+        kb.append(r)
+    reply_markup = InlineKeyboardMarkup(kb) if kb else None
+    await update.message.reply_text(
+        text,
+        parse_mode=constants.ParseMode.HTML,
+        reply_markup=reply_markup,
+        disable_web_page_preview=True
+    )
+
 # --- TELEGRAM APPROVAL & INTERACTIVE CALLBACK HANDLER ---
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2545,6 +2576,56 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             "> 🤖 Server backup siap menerima instruksi baru dari awal."
         )
         await query.message.reply_text(restart_notice, parse_mode=constants.ParseMode.HTML)
+
+    elif data == "cluster_refresh":
+        if cluster_mgr:
+            text, buttons_matrix = cluster_mgr.render_cluster_menu()
+            kb = []
+            for row in buttons_matrix:
+                r = [InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in row]
+                kb.append(r)
+            reply_markup = InlineKeyboardMarkup(kb) if kb else None
+            try:
+                await query.edit_message_text(text, parse_mode=constants.ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
+            except Exception:
+                pass
+
+    elif data == "cluster_sync":
+        if cluster_mgr:
+            await query.answer("Memulai sinkronisasi cluster...", show_alert=False)
+            res = cluster_mgr.sync_all_to_peers()
+            peers_list = ", ".join(res.get("peers", [])) or "Semua node terhubung"
+            await query.answer("Sinkronisasi cluster selesai!", show_alert=True)
+            text, buttons_matrix = cluster_mgr.render_cluster_menu()
+            kb = []
+            for row in buttons_matrix:
+                r = [InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in row]
+                kb.append(r)
+            reply_markup = InlineKeyboardMarkup(kb) if kb else None
+            try:
+                sync_summary = f"\n\n> ✅ <b>Sinkronisasi Berhasil</b>: <code>{peers_list}</code> (Skills diupdate: <code>{res.get('skills_synced', 0)}</code>)"
+                await query.edit_message_text(text + sync_summary, parse_mode=constants.ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
+            except Exception:
+                pass
+
+    elif data.startswith("cluster_switch:"):
+        target_id = data.split(":", 1)[1]
+        if cluster_mgr:
+            await query.answer(f"Memindahkan kendali ke {target_id}...", show_alert=False)
+            success, msg = cluster_mgr.switch_primary_to(target_id)
+            if success:
+                try:
+                    await query.edit_message_text(
+                        f"> 🔁 <b>Peralihan Kendali Berhasil</b>\n>\n> {msg}\n> Server ini sekarang beralih ke mode <b>STANDBY</b>.",
+                        parse_mode=constants.ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+            else:
+                await query.message.reply_text(
+                    f"> ❌ <b>Gagal Pindah Server</b>: {msg}",
+                    parse_mode=constants.ParseMode.HTML
+                )
 
 # --- REALTIME SYNC DAEMON ---
 
@@ -2718,6 +2799,9 @@ def save_task_state(data: dict):
     try:
         with open(TASK_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        global cluster_mgr
+        if cluster_mgr and cluster_mgr.is_primary():
+            cluster_mgr.broadcast_context_to_peers()
     except Exception as e:
         logger.warning(f"Failed to save task state: {e}")
 
@@ -2802,20 +2886,11 @@ async def check_and_prompt_failover_task(bot):
         logger.error(f"Failed to send failover recovery message: {e}")
 
 async def check_peer_node_polling(bot_token: str) -> bool:
-    """
-    Checks if another instance is actively polling Telegram by testing a non-destructive getUpdates call.
-    If another node is already polling with the same token, Telegram returns 409 Conflict.
-    Returns: True if another node is active (Conflict 409), False if polling is free.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset=-1&limit=1&timeout=1"
-            res = await client.get(url)
-            if res.status_code == 409:
-                return True
-            return False
-    except Exception:
-        return False
+    """Delegates peer check to ClusterManager without making conflicting getUpdates calls."""
+    global cluster_mgr
+    if cluster_mgr:
+        return not cluster_mgr.is_primary()
+    return False
 
 def load_server_state() -> dict:
     if SERVER_STATE_FILE.exists():
@@ -2963,11 +3038,9 @@ async def post_init(application: Application):
     logger.info("Checking for interrupted tasks from previous failover / crash...")
     asyncio.create_task(check_and_prompt_failover_task(application.bot))
 
-# --- MAIN RUNNER ---
+# --- MAIN RUNNER & CLUSTER LIFECYCLE ---
 
-def main():
-    logger.info("Initializing Bridge-Telegram Gateway...")
-    
+def build_application() -> Application:
     req = HTTPXRequest(
         connect_timeout=25.0,
         read_timeout=60.0,
@@ -2984,6 +3057,7 @@ def main():
     app.add_handler(CommandHandler(["model", "models"], model_cmd))
     app.add_handler(CommandHandler(["backend", "provider"], backend_cmd))
     app.add_handler(CommandHandler(["status"], status_cmd))
+    app.add_handler(CommandHandler(["server", "nodes", "cluster"], server_cmd))
     app.add_handler(CommandHandler(["cd", "workspace", "pwd"], cd_cmd))
     app.add_handler(CommandHandler(["ls", "dir"], ls_cmd))
     app.add_handler(CommandHandler(["clear", "reset"], clear_cmd))
@@ -3012,58 +3086,72 @@ def main():
     # Natural Message Handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Interactive Button Callback Handler (Approvals)
+    # Interactive Button Callback Handler
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    failover_cfg = _cfg.get("failover", {})
-    failover_enabled = failover_cfg.get("enabled", True)
-    configured_role = failover_cfg.get("role", "auto").lower()
+    return app
 
-    logger.info("Bridge-Telegram is initializing high-availability gateway...")
-    logger.info(f"Authorized ID: {AUTHORIZED_USER_ID} | Provider: {BACKEND_PROVIDER} | Failover: {failover_enabled} (Role: {configured_role})")
+def main():
+    global cluster_mgr, active_app
+    logger.info("Initializing Bridge-Telegram Gateway with Cluster Multi-Server Engine...")
 
-    # If configured as standby or in auto mode, check if a peer primary node is already active
-    is_standby = False
-    if failover_enabled and configured_role in ["standby", "backup"]:
-        is_standby = True
-    elif failover_enabled and configured_role == "auto":
-        peer_active = asyncio.run(check_peer_node_polling(BOT_TOKEN))
-        if peer_active:
-            is_standby = True
-            logger.warning("Primary node detected actively polling Telegram! This node is now STANDBY (Auto-Failover Mode).")
+    def on_role_change(new_role: str):
+        logger.info(f"Cluster role transitioned to: {new_role}")
+        if active_app and new_role != "primary":
+            try:
+                active_app.stop_running()
+            except Exception as e:
+                logger.debug(f"Stop running notification: {e}")
 
-    if is_standby:
-        logger.info("Entering Standby Monitor Loop... Waiting for primary node to go offline before taking over.")
-        check_interval = float(failover_cfg.get("standby_check_interval", 6.0))
-        miss_threshold = int(failover_cfg.get("takeover_threshold_misses", 3))
-        consecutive_offline_checks = 0
-
-        while True:
-            time.sleep(check_interval)
-            peer_still_active = asyncio.run(check_peer_node_polling(BOT_TOKEN))
-            if not peer_still_active:
-                consecutive_offline_checks += 1
-                logger.info(f"Primary node appear offline ({consecutive_offline_checks}/{miss_threshold})...")
-                if consecutive_offline_checks >= miss_threshold:
-                    logger.warning("Primary node is DOWN! Triggering automatic takeover to ACTIVE PRIMARY!")
-                    break
-            else:
-                consecutive_offline_checks = 0
-
-    while True:
+    def on_alert(msg: str):
         try:
-            app.run_polling(drop_pending_updates=True, bootstrap_retries=-1)
-            break
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            httpx.post(
+                url,
+                json={
+                    "chat_id": AUTHORIZED_USER_ID,
+                    "text": msg,
+                    "parse_mode": "HTML",
+                },
+                timeout=6.0,
+            )
         except Exception as e:
-            err_str = str(e).lower()
-            if "conflict" in err_str or "terminated by other getupdates" in err_str:
-                logger.warning("Telegram polling conflict detected (another primary server is active). Entering Standby Sleep...")
-                time.sleep(10)
-                continue
-            logger.error(f"Error in run_polling: {e}. Retrying in 5 seconds...")
-            time.sleep(5)
-    
-    logger.info("Bridge-Telegram run_polling has terminated.")
+            logger.error(f"Failed to dispatch cluster failover alert: {e}")
+
+    cluster_mgr = ClusterManager(
+        config=_cfg,
+        bridge_dir=BRIDGE_DIR,
+        session_obj=session,
+        role_change_callback=on_role_change,
+        alert_callback=on_alert,
+    )
+    cluster_mgr.start()
+
+    logger.info(f"ClusterManager running on node [{cluster_mgr.server_id}]. Initial role: [{cluster_mgr.current_role.upper()}]")
+
+    while not cluster_mgr.shutdown_event.is_set():
+        if cluster_mgr.is_primary():
+            logger.info("Node is PRIMARY: Launching Telegram polling...")
+            active_app = build_application()
+            try:
+                active_app.run_polling(drop_pending_updates=False, bootstrap_retries=-1, close_loop=False)
+            except Exception as e:
+                err_str = str(e).lower()
+                if "conflict" in err_str:
+                    logger.warning("Telegram polling conflict detected. Demoting to STANDBY for automatic resolution...")
+                    cluster_mgr.current_role = "standby"
+                    cluster_mgr.self_node.role = "standby"
+                    time.sleep(5)
+                else:
+                    logger.error(f"Error in run_polling: {e}. Retrying in 3 seconds...")
+                    time.sleep(3)
+        else:
+            # Standby mode: completely silent towards Telegram API (Zero Conflict)
+            logger.info("Node is in STANDBY mode. Monitoring cluster heartbeat and awaiting promotion...")
+            while not cluster_mgr.is_primary() and not cluster_mgr.shutdown_event.is_set():
+                time.sleep(1.0)
+
+    logger.info("Bridge-Telegram run_polling lifecycle terminated.")
 
 if __name__ == "__main__":
     while True:

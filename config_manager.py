@@ -45,6 +45,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "role": "auto",
         "standby_check_interval": 6.0,
         "takeover_threshold_misses": 3
+    },
+    "cluster": {
+        "enabled": True,
+        "server_id": "server-smk-al-huda",
+        "server_name": "Server SMK AL-HUDA",
+        "port": 8765,
+        "role": "auto",
+        "lan_discovery": True,
+        "lan_beacon_port": 8766,
+        "secret_token": "allzxy-cluster-secret",
+        "peers": [],
+        "auto_sync_context": True,
+        "auto_sync_skills": True,
+        "sync_interval": 30.0,
+        "standby_check_interval": 4.0,
+        "takeover_threshold_misses": 3
     }
 }
 
