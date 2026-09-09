@@ -253,6 +253,17 @@ class ClusterManager:
         self.standby_check_interval = float(cluster_cfg.get("standby_check_interval", 4.0))
         self.takeover_threshold_misses = int(cluster_cfg.get("takeover_threshold_misses", 3))
 
+        # Cloud Discovery & Signaling (Zero-config across different networks)
+        self.bot_token = config.get("bot_token", "")
+        self.authorized_user_id = int(config.get("authorized_user_id", 0))
+        self.cloud_discovery = cluster_cfg.get("cloud_discovery", True)
+        if self.bot_token and self.authorized_user_id:
+            raw_sign = f"{self.bot_token}:{self.authorized_user_id}".encode("utf-8")
+            self.cloud_topic = "allzxy_cl_" + hashlib.sha256(raw_sign).hexdigest()[:24]
+        else:
+            self.cloud_topic = ""
+        self.last_cloud_msg_time = 0.0
+
         # Directives & Skills directory detection
         hub_path = config.get("antigravity", {}).get("hub_path", "")
         if hub_path and Path(hub_path).exists():
@@ -302,6 +313,8 @@ class ClusterManager:
         self.http_thread: Optional[threading.Thread] = None
         self.beacon_broadcaster_thread: Optional[threading.Thread] = None
         self.beacon_listener_thread: Optional[threading.Thread] = None
+        self.cloud_broadcaster_thread: Optional[threading.Thread] = None
+        self.cloud_listener_thread: Optional[threading.Thread] = None
         self.watchdog_thread: Optional[threading.Thread] = None
         self.sync_thread: Optional[threading.Thread] = None
 
@@ -347,6 +360,14 @@ class ClusterManager:
                 except Exception:
                     pass
 
+            # Also broadcast via zero-config cloud channel
+            if self.cloud_discovery and self.cloud_topic:
+                try:
+                    c_payload = json.dumps({"type": "claim", "msg_id": msg_id, "server_id": self.server_id})
+                    httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=c_payload, timeout=2.0)
+                except Exception:
+                    pass
+
         threading.Thread(target=_notify_peers, daemon=True).start()
         return True
 
@@ -362,6 +383,11 @@ class ClusterManager:
         if self.lan_discovery:
             self._start_lan_beacon_listener()
             self._start_lan_beacon_broadcaster()
+
+        if self.cloud_discovery and self.cloud_topic:
+            logger.info(f"Activating Zero-Config Cloud Signaling on channel: {self.cloud_topic}")
+            self._start_cloud_signaling_listener()
+            self._start_cloud_signaling_broadcaster()
 
         # Run initial peer discovery check to decide role if configured as "auto"
         if self.configured_role == "auto":
@@ -479,6 +505,124 @@ class ClusterManager:
         self.beacon_listener_thread = threading.Thread(target=_listener, daemon=True, name="ClusterBeaconListener")
         self.beacon_listener_thread.start()
 
+    # --- ZERO-CONFIG CLUSTER CLOUD SIGNALING (DIFFERENT NETWORKS) ---
+
+    def _start_cloud_signaling_broadcaster(self):
+        def _broadcaster():
+            while not self.shutdown_event.is_set():
+                try:
+                    if self.is_primary():
+                        payload = {
+                            "type": "heartbeat",
+                            "server_id": self.server_id,
+                            "server_name": self.server_name,
+                            "role": "primary",
+                            "timestamp": time.time(),
+                            "cpu": self.self_node.cpu_percent,
+                            "ram": self.self_node.ram_percent,
+                            "skills_count": len(self.get_skills_manifest()),
+                            "active_model": getattr(self.session, "active_model", ""),
+                            "turns": getattr(self.session, "turns", 0),
+                            "context": self.get_context_data() if self.auto_sync_context else None,
+                        }
+                        httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(payload), timeout=4.0)
+                    else:
+                        payload = {
+                            "type": "presence",
+                            "server_id": self.server_id,
+                            "server_name": self.server_name,
+                            "role": "standby",
+                            "timestamp": time.time(),
+                            "cpu": self.self_node.cpu_percent,
+                            "ram": self.self_node.ram_percent,
+                            "skills_count": len(self.get_skills_manifest()),
+                            "active_model": getattr(self.session, "active_model", ""),
+                            "turns": getattr(self.session, "turns", 0),
+                        }
+                        httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(payload), timeout=4.0)
+                except Exception as e:
+                    logger.debug(f"Cloud broadcaster error: {e}")
+                time.sleep(6.0 if self.is_primary() else 15.0)
+
+        self.cloud_broadcaster_thread = threading.Thread(target=_broadcaster, daemon=True, name="ClusterCloudBroadcast")
+        self.cloud_broadcaster_thread.start()
+
+    def _start_cloud_signaling_listener(self):
+        def _listener():
+            last_poll_time = time.time() - 30.0
+            while not self.shutdown_event.is_set():
+                time.sleep(4.0)
+                try:
+                    url = f"https://ntfy.sh/{self.cloud_topic}/json?poll=1&since={int(last_poll_time)}"
+                    with httpx.Client(timeout=4.5) as client:
+                        resp = client.get(url)
+                    if resp.status_code != 200:
+                        continue
+
+                    now = time.time()
+                    for line in resp.text.strip().splitlines():
+                        try:
+                            envelope = json.loads(line)
+                            msg_time = envelope.get("time", 0)
+                            if msg_time > last_poll_time:
+                                last_poll_time = msg_time
+                            
+                            if "message" not in envelope:
+                                continue
+                            data = json.loads(envelope["message"])
+                            msg_type = data.get("type")
+                            sender_id = data.get("server_id")
+                            if not sender_id or sender_id == self.server_id:
+                                continue
+
+                            sender_name = data.get("server_name", sender_id)
+                            # Register or update peer node in cluster registry
+                            if sender_id not in self.peers:
+                                self.peers[sender_id] = ClusterNode(
+                                    node_id=sender_id,
+                                    name=sender_name,
+                                    url="",
+                                    role=data.get("role", "standby")
+                                )
+                            peer = self.peers[sender_id]
+                            peer.name = sender_name
+                            peer.role = data.get("role", peer.role)
+                            peer.last_seen = now
+                            peer.is_online = True
+                            peer.cpu_percent = data.get("cpu", peer.cpu_percent)
+                            peer.ram_percent = data.get("ram", peer.ram_percent)
+                            peer.skills_count = data.get("skills_count", peer.skills_count)
+                            peer.active_model = data.get("active_model", peer.active_model)
+                            peer.turns = data.get("turns", peer.turns)
+
+                            # Handle primary heartbeat
+                            if msg_type == "heartbeat" and data.get("role") == "primary":
+                                if self.current_role == "standby":
+                                    self.consecutive_misses = 0
+                                    ctx = data.get("context")
+                                    if ctx and self.auto_sync_context:
+                                        self.apply_context_data(ctx)
+
+                            # Handle takeover command
+                            elif msg_type == "takeover":
+                                target_id = data.get("target_id")
+                                if target_id == self.server_id:
+                                    logger.info(f"Received Cloud Takeover command from {sender_id}!")
+                                    self.handle_remote_takeover(data)
+
+                            # Handle claim message deduplication
+                            elif msg_type == "claim":
+                                mid = data.get("msg_id")
+                                if mid:
+                                    self.register_message_claim(mid, sender_id)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"Cloud listener error: {e}")
+
+        self.cloud_listener_thread = threading.Thread(target=_listener, daemon=True, name="ClusterCloudListener")
+        self.cloud_listener_thread.start()
+
     # --- ROLE ARBITRATION & INITIAL DETECTION ---
 
     def _determine_initial_role(self):
@@ -487,6 +631,7 @@ class ClusterManager:
         active_primary_found = False
         time.sleep(1.5)  # brief wait for initial beacons
 
+        # Check LAN and static peers
         for pid, node in list(self.peers.items()):
             if pid == self.server_id or not node.url:
                 continue
@@ -498,10 +643,40 @@ class ClusterManager:
                         node.update_from_status(data)
                         if data.get("role") == "primary":
                             active_primary_found = True
-                            logger.info(f"Active PRIMARY node detected: {node.name} ({node.node_id}) at {node.url}")
+                            logger.info(f"Active PRIMARY node detected via HTTP: {node.name} ({node.node_id}) at {node.url}")
                             break
             except Exception:
                 node.is_online = False
+
+        # Check Cloud Discovery channel across different networks
+        if not active_primary_found and self.cloud_discovery and self.cloud_topic:
+            try:
+                with httpx.Client(timeout=4.0) as client:
+                    resp = client.get(f"https://ntfy.sh/{self.cloud_topic}/json?poll=1")
+                    if resp.status_code == 200:
+                        now = time.time()
+                        for line in resp.text.strip().splitlines():
+                            try:
+                                env = json.loads(line)
+                                if "message" in env:
+                                    msg = json.loads(env["message"])
+                                    pid = msg.get("server_id")
+                                    role = msg.get("role")
+                                    ts = msg.get("timestamp") or msg.get("time", 0.0)
+                                    if pid and pid != self.server_id and role == "primary" and (now - ts < 30.0):
+                                        active_primary_found = True
+                                        pname = msg.get("server_name", pid)
+                                        logger.info(f"Cloud Discovery detected active PRIMARY node: {pname} ({pid}) on topic {self.cloud_topic}")
+                                        if pid not in self.peers:
+                                            self.peers[pid] = ClusterNode(node_id=pid, name=pname, url="", role="primary")
+                                        else:
+                                            self.peers[pid].role = "primary"
+                                            self.peers[pid].is_online = True
+                                        break
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.debug(f"Cloud discovery probe error: {e}")
 
         if active_primary_found:
             self.current_role = "standby"
@@ -650,8 +825,8 @@ class ClusterManager:
         target = self.peers.get(target_node_id)
         if not target:
             return False, f"Server target '{target_node_id}' tidak ditemukan di cluster."
-        if not target.is_online or not target.url:
-            return False, f"Server target '{target.name}' sedang offline atau URL tidak valid."
+        if not target.is_online:
+            return False, f"Server target '{target.name}' sedang offline."
         if target.node_id == self.server_id:
             return False, "Server ini sudah aktif sebagai PRIMARY."
 
@@ -659,28 +834,43 @@ class ClusterManager:
 
         headers = {"X-Cluster-Token": self.secret_token}
         takeover_payload = {
+            "type": "takeover",
+            "target_id": target.node_id,
             "source_node": self.server_id,
             "context": self.get_context_data(),
             "timestamp": time.time(),
         }
 
-        try:
-            with httpx.Client(timeout=8.0) as client:
-                resp = client.post(f"{target.url}/api/takeover", json=takeover_payload, headers=headers)
-                if resp.status_code != 200:
-                    return False, f"Target node menolak takeover: {resp.text}"
+        cloud_sent = False
+        if self.cloud_discovery and self.cloud_topic:
+            try:
+                r = httpx.post(f"https://ntfy.sh/{self.cloud_topic}", data=json.dumps(takeover_payload), timeout=4.0)
+                if r.status_code == 200:
+                    cloud_sent = True
+            except Exception as e:
+                logger.debug(f"Cloud takeover error: {e}")
 
-            # Successfully handed over, now step down local node
-            self.current_role = "standby"
-            self.self_node.role = "standby"
-            if self.role_change_callback:
-                self.role_change_callback("standby")
+        http_sent = False
+        if target.url:
+            try:
+                with httpx.Client(timeout=4.0) as client:
+                    resp = client.post(f"{target.url}/api/takeover", json=takeover_payload, headers=headers)
+                    if resp.status_code == 200:
+                        http_sent = True
+            except Exception as e:
+                logger.debug(f"HTTP takeover error: {e}")
 
-            target.role = "primary"
-            return True, f"Kendali berhasil dialihkan ke <b>{target.name}</b>."
-        except Exception as e:
-            logger.error(f"Error transferring primary role: {e}")
-            return False, f"Gagal menghubungi server target: {str(e)}"
+        if not cloud_sent and not http_sent:
+            return False, f"Gagal mengirim sinyal alih kendali ke '{target.name}'."
+
+        # Step down local node to standby
+        self.current_role = "standby"
+        self.self_node.role = "standby"
+        if self.role_change_callback:
+            self.role_change_callback("standby")
+
+        target.role = "primary"
+        return True, f"Kendali berhasil dialihkan ke <b>{target.name}</b>."
 
     # --- CONTEXT & SKILLS DATA METHODS ---
 

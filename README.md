@@ -46,39 +46,29 @@ Telah dilengkapi file direktif otomatis:
 - [`CLAUDE.md`](file:///E:/Alfan/telegram-bridge/CLAUDE.md) — Claude Code Native Directives
 - [`.cursorrules`](file:///E:/Alfan/telegram-bridge/.cursorrules) & [`.windsurfrules`](file:///E:/Alfan/telegram-bridge/.windsurfrules) — Cursor & Windsurf IDE Rules
 
-Agent cukup menjalankan 3 langkah otomatis:
-1. `pip install -r requirements.txt`
-2. Salin `config.example.json` ke `config.json` (biarkan `backend_provider: auto`), lalu tanyakan ke user:
-   - **Workspace Directory** (tempat bot bekerja dan menyimpan analisis/project baru).
-   - **Bot Token** dan **Telegram User ID**.
-3. Jalankan `bridge_telegram.py` (atau script background `Auto Run/start_bot_hidden.vbs`).
+Agent cukup menjalankan **SATU BARIS PERINTAH**:
+```bash
+pip install -r requirements.txt
+python setup.py --token "<BOT_TOKEN>" --owner <TELEGRAM_USER_ID> --yes
+```
+
+> ⚡ **Yang otomatis terjadi:**
+> 1. **Auto Cloud Discovery**: Deteksi otomatis via sinyal enkripsi cloud jika ada server lain yang sedang running dengan token yang sama.
+> 2. **Auto Standby / Primary**: Jika server utama sudah ada, server baru otomatis menjadi **STANDBY** (bebas konflik polling 409). Jika belum ada, otomatis menjadi **PRIMARY**.
+> 3. **Auto Workspace**: Otomatis mendeteksi folder workspace dan downloads.
+> 4. **Auto Launch**: Otomatis menjalankan service bot di background.
 
 ---
 
-## 🛠️ Manual Installation
+## 🛠️ Manual / Interactive Installation
 
-### 1. Prerequisites
-- Python 3.10 or higher
-- Telegram account and bot token from [@BotFather](https://t.me/BotFather)
-- Your Telegram User ID from [@userinfobot](https://t.me/userinfobot)
-
-### 2. Setup
 ```bash
 git clone https://github.com/yourusername/bridge-telegram.git
 cd bridge-telegram
 pip install -r requirements.txt
 python setup.py
 ```
-The interactive wizard will guide you through:
-- Bot Token & Authorized User ID
-- Backend Provider selection (Antigravity, OpenAI, 9Router, Hermes, CLI)
-- Workspace and Downloads folder setup
-
-### 3. Running the Bot
-```bash
-python bridge_telegram.py
-```
-Or use background runners in `Auto Run/` for Windows.
+Wizard interaktif akan memandu setup Bot Token, Authorized User ID, serta mendeteksi kluster multi-server secara otomatis.
 
 ---
 

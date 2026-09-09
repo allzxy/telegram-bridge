@@ -39,5 +39,22 @@
     "role": "auto",
     "standby_check_interval": 6.0,
     "takeover_threshold_misses": 3
+  },
+  "cluster": {
+    "enabled": true,
+    "server_id": "auto",
+    "server_name": "Server Node",
+    "port": 8765,
+    "role": "auto",
+    "lan_discovery": true,
+    "lan_beacon_port": 8766,
+    "cloud_discovery": true,
+    "secret_token": "allzxy-cluster-secret",
+    "peers": [],
+    "auto_sync_context": true,
+    "auto_sync_skills": true,
+    "sync_interval": 30.0,
+    "standby_check_interval": 4.0,
+    "takeover_threshold_misses": 3
   }
 }

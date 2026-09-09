@@ -15,34 +15,23 @@ Check if Python 3.10+ is installed, then install dependencies:
 pip install -r requirements.txt
 ```
 
-## 2. Configuration Extraction & Setup
-Check if `config.json` exists in the repository root.
-If `config.json` does NOT exist:
-1. Copy `config.example.json` to `config.json`.
-2. Inspect what AI agent or provider is currently running in this environment:
-   - If running inside **Google Antigravity**: set `"backend_provider": "antigravity"`. Locate `agy.exe` and fill `"binary_path"`.
-   - If running with **Hermes Agent / Local Ollama**: set `"backend_provider": "hermes"`. API base: `http://localhost:11434/v1`.
-   - If running with **9Router**: set `"backend_provider": "nine_router"`. Ask the user for their 9Router API key.
-   - If running with **OpenCode / Claude Code / CLI**: set `"backend_provider": "cli_agent"`.
-   - Otherwise, set `"backend_provider": "auto"`.
-3. **Ask the user for their desired workspace and credentials**:
-   - `working_directory`: Ask where they want tasks and projects executed/saved (e.g. `E:\Projects` or `C:\Users\<user>\Workspace`).
-   - `bot_token`: Telegram Bot token obtained from `@BotFather`.
-   - `authorized_user_id`: Numeric Telegram User ID (obtained from `@userinfobot`).
-4. Set `"downloads_directory"` to `<working_directory>/downloads` and save into `config.json`.
+## 2. Autonomous Setup & Multi-Server Cluster Auto-Discovery
+Run the autonomous installer directly using the user's Bot Token and Telegram User ID:
+```bash
+python setup.py --token "<BOT_TOKEN>" --owner <TELEGRAM_USER_ID> --yes
+```
 
-## 3. Launching the Bridge
-Launch the bot service:
-- **Foreground (Testing & Verification)**:
-  ```bash
-  python bridge_telegram.py
-  ```
-- **Windows Background Daemon**:
-  Execute `Auto Run/start_bot_hidden.vbs` or `Auto Run/JALANKAN_BOT.bat`.
-- **Linux / macOS Systemd / Background Daemon**:
-  ```bash
-  nohup python3 bridge_telegram.py > bridge_telegram.log 2>&1 &
-  ```
+> ⚡ **Autonomous Capabilities:**
+> - Automatically probes the cryptographic cloud signaling channel (`ntfy.sh`).
+> - If another server is already running, this node becomes **STANDBY** (zero-conflict failover, no 409 collisions).
+> - If no server is running, this node becomes **PRIMARY**.
+> - Automatically synchronizes skills and active conversation context.
+> - Automatically starts the daemon in background.
+
+## 3. Verification & Testing
+1. Open Telegram and send `/server` or `/status` to the bot.
+2. Confirm the bot displays the multi-server cluster dashboard with active node info.
+3. Test a prompt or task to verify bidirectional communication.
 
 ## 4. Verification & Testing
 1. Send `/start` in the Telegram bot chat.
